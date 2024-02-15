@@ -1,0 +1,90 @@
+---
+- name: Prepare to install Kubernetes
+  become: true
+  hosts: external
+  tasks:
+
+    - name: Ensure the keyrings directory exists
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+
+    - name: Create the k8s.gpg keyring file
+      file:
+        path: /etc/apt/keyrings/k8s.gpg
+        state: touch
+
+    - name: Add gpg key for K8S
+      apt_key:
+        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+        keyring: /etc/apt/keyrings/k8s.gpg
+
+
+    - name: Add repository K8S
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/k8s.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        state: present
+        filename: k8s
+        mode: 0600
+
+    - name: Load kernel modules
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+
+    - name: Set Sysctl on all nodes
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+      with_items:
+        - name: net.ipv4.ip_forward
+          value: 1
+        - name: net.bridge.bridge-nf-call-iptables
+          value: 1
+        - name: net.bridge.bridge-nf-call-ip6tables
+          value: 1
+
+
+    - name: Prepare to install Kubernetes | Exec commands
+      ansible.builtin.command: "{{ item }}"
+      with_items:
+        - modprobe overlay
+        - modprobe br_netfilter
+        - sysctl --system
+        - swapoff -a
+      register: result
+      changed_when: result.rc != 0
+
+    - name: Stop UFW service
+      systemd:
+        name: ufw
+        state: stopped
+        enabled: no
+
+    - name: Mask firewalld service
+      shell:
+        cmd: systemctl mask firewalld
+
+- name: Install Kubernetes
+  become: true
+  hosts: external
+  tasks:
+    - name: Install Kubernetes | Install packages
+      ansible.builtin.apt:
+        name:
+          - kubectl
+          - kubeadm
+          - kubelet
+          - containerd
+        state: present
+      notify: Start kubelet service
+
+  handlers:
+    - name: Start kubelet service
+      ansible.builtin.service:
+        name: kubelet
+        enabled: true
+        state: started
